@@ -1,78 +1,160 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import {
+	App,
+	Editor,
+	MarkdownView,
+	Plugin,
+	PluginSettingTab,
+	Setting,
+	SuggestModal, TAbstractFile,
+} from 'obsidian';
 
-// Remember to rename these classes and interfaces!
 
-interface MyPluginSettings {
+import {FileSuggestionComponent} from "obsidian-file-suggestion-component";
+
+// create ids interface
+interface Ids {
+	mag: string;
+	openalex: string
+	wikidata: string
+	wikipedia: string
+	umls_cui: object
+
+}
+
+interface Entity {
+	displayName: string;
+	description: string;
+	ids: Ids
+}
+
+interface EntityLinkerSettings {
 	mySetting: string;
+	entityFolder: string
+	politeEmail: string
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
+const DEFAULT_SETTINGS: EntityLinkerSettings = {
+	mySetting: 'default',
+	entityFolder: '',
+	politeEmail: ''
 }
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+export class EntitySuggestionModal extends SuggestModal<Entity> {
+	// Returns all available suggestions.
+	entities: Entity[];
+	result: object
+	onSubmit: (result: object) => void;
+
+	constructor(app: App, headings: Entity[], onSubmit: (result: object) => void) {
+		super(app);
+		this.entities = headings;
+		this.onSubmit = onSubmit;
+
+	}
+
+	onOpen() {
+		// console.log("inside onOpen");
+		super.onOpen();
+	}
+
+	getSuggestions(query: string): Entity[] {
+		return this.entities.filter((item) =>
+			item.displayName.toLowerCase().includes(query.toLowerCase())
+		);
+	}
+
+	// Renders each suggestion item.
+	renderSuggestion(entity: Entity, el: HTMLElement) {
+		el.createEl("div", {text: entity.displayName});
+		el.createEl("small", {text: entity.description ? entity.description : ""});
+	}
+
+
+	onChooseSuggestion(entity: Entity, evt: MouseEvent | KeyboardEvent) {
+		this.onSubmit(entity);
+	}
+}
+
+export default class EntityLinker extends Plugin {
+	settings: EntityLinkerSettings;
+
+	async userAction(url: any, callback: (arg0: any) => void) {
+		const response = await fetch(url, {
+			method: 'GET',
+			headers: {
+				'Content-Type': 'application/json'
+			}
+		});
+		const result = await response.json();
+		callback(result)
+	}
+
+	generatePropertiesFromEntity(entity: Entity) {
+		let property_string = "---\n"
+		for (const [key, value] of Object.entries(entity)) {
+			if (typeof (value) == "string") {
+				property_string += key + ": " + value + "\n"
+
+			} else if (typeof (value) == "object") {
+				// const suffix = key == "ids" ? "_id" : ""
+				for (const [key2, value2] of Object.entries(value)) {
+					property_string += key2 + ": " + value2 + "\n"
+				}
+			}
+		}
+		property_string += "\n---\n"
+		// console.log(property_string)
+		return property_string
+	}
+
+	isValidEmail(email: string) {
+		return /\S+@\S+\.\S+/.test(email);
+	}
+
+	fetchEntities(search_term: string, callback: (arg0: any) => void) {
+		let base_url = "https://api.openalex.org/concepts?"
+		if (this.settings.politeEmail != "" && this.isValidEmail(this.settings.politeEmail)) {
+			base_url += "mailto=" + this.settings.politeEmail + "&"
+		}
+		this.userAction(base_url + "search=" + search_term, (response) => {
+			// console.log(response)
+			const results = response.results
+			const entity_suggestions = results.map((result: any) => {
+				return {displayName: result.display_name, description: result.description, ids: result.ids}
+			})
+			callback(entity_suggestions)
+		})
+	}
 
 	async onload() {
 		await this.loadSettings();
-
-		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-		// Perform additional things with the ribbon
-		ribbonIconEl.addClass('my-plugin-ribbon-class');
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
-
-		// This adds a simple command that can be triggered anywhere
 		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
+			id: 'search-entity-command',
+			name: 'Search entity',
 			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
+				const search_term = editor.getSelection();
+				// editor.replaceSelection('Sample Editor Command');
+				this.fetchEntities(search_term, (entity_suggestions) => {
+					const emodal = new EntitySuggestionModal(this.app, entity_suggestions, (result: Entity) => {
+						// console.log(result)
+						const property_string = this.generatePropertiesFromEntity(result)
+						// console.log(this.settings)
+						this.app.vault.create(this.settings.entityFolder + "/" + result.displayName + ".md", property_string).then(value => {
+							// console.log(value)
+							this.app.workspace.getLeaf('tab').openFile(value)
+						}, error => {
+							console.log(error)
+						})
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
+					})
+					emodal.setPlaceholder(search_term);
+					emodal.open()
+				})
 			}
 		});
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
-		});
+		this.addSettingTab(new EntityLinkerSettingsTab(this.app, this));
 
 		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
 		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
@@ -91,26 +173,11 @@ export default class MyPlugin extends Plugin {
 	}
 }
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
 
-	onOpen() {
-		const {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
+class EntityLinkerSettingsTab extends PluginSettingTab {
+	plugin: EntityLinker;
 
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
-}
-
-class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
-
-	constructor(app: App, plugin: MyPlugin) {
+	constructor(app: App, plugin: EntityLinker) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
@@ -121,14 +188,29 @@ class SampleSettingTab extends PluginSettingTab {
 		containerEl.empty();
 
 		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
-				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
-					await this.plugin.saveSettings();
-				}));
+			.setName("Polite Email")
+			.setDesc("Adding email to openalex API requests(for faster and more consistent response times)")
+			.addText((text) =>
+				text
+					.setPlaceholder("Enter email here")
+					.setValue(this.plugin.settings.politeEmail)
+					.onChange(async (value) => {
+						this.plugin.settings.politeEmail = value;
+						await this.plugin.saveSettings();
+					}));
+
+		const saveLoc = new Setting(containerEl)
+			.setName('Entity folder')
+			.setDesc('Folder to store entities');
+
+		new FileSuggestionComponent(saveLoc.controlEl, this.app)
+			.setValue(this.plugin.settings.entityFolder)
+			.setPlaceholder(DEFAULT_SETTINGS.entityFolder)
+			.setFilter("folder")
+			.setLimit(10)
+			.onSelect(async (val: TAbstractFile) => {
+				this.plugin.settings.entityFolder = val.path;
+				await this.plugin.saveSettings();
+			});
 	}
 }
