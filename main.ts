@@ -5,7 +5,7 @@ import {
 	Plugin,
 	PluginSettingTab,
 	Setting,
-	SuggestModal, TAbstractFile,
+	SuggestModal, TAbstractFile, TFile,
 } from 'obsidian';
 
 
@@ -31,12 +31,14 @@ interface EntityLinkerSettings {
 	mySetting: string;
 	entityFolder: string
 	politeEmail: string
+	overwriteFlag: boolean
 }
 
 const DEFAULT_SETTINGS: EntityLinkerSettings = {
 	mySetting: 'default',
 	entityFolder: '',
-	politeEmail: ''
+	politeEmail: '',
+	overwriteFlag: false
 }
 
 export class EntitySuggestionModal extends SuggestModal<Entity> {
@@ -90,21 +92,20 @@ export default class EntityLinker extends Plugin {
 	}
 
 	generatePropertiesFromEntity(entity: Entity) {
-		let property_string = "---\n"
-		for (const [key, value] of Object.entries(entity)) {
-			if (typeof (value) == "string") {
-				property_string += key + ": " + value + "\n"
+		const entity_props: { [key: string]: any } = {};
 
+		for (const [key, value] of Object.entries(entity)) {
+			if (typeof (value) == "string" || Array.isArray(value)) {
+				entity_props[key] = value
+				// property_string += key + ": " + value + "\n"
 			} else if (typeof (value) == "object") {
 				// const suffix = key == "ids" ? "_id" : ""
 				for (const [key2, value2] of Object.entries(value)) {
-					property_string += key2 + ": " + value2 + "\n"
+					entity_props[key2] = value2 //property_string += key2 + ": " + value2 + "\n"
 				}
 			}
 		}
-		property_string += "\n---\n"
-		// console.log(property_string)
-		return property_string
+		return entity_props
 	}
 
 	isValidEmail(email: string) {
@@ -120,38 +121,120 @@ export default class EntityLinker extends Plugin {
 			// console.log(response)
 			const results = response.results
 			const entity_suggestions = results.map((result: any) => {
-				return {displayName: result.display_name, description: result.description, ids: result.ids}
+				return {
+					"wikidata entity id": result.ids.wikidata.split("/").last(),
+					displayName: result.display_name,
+					description: result.description,
+					ids: result.ids
+				}
 			})
 			callback(entity_suggestions)
+		})
+	}
+
+	async updateFrontMatter(file: TAbstractFile, entity_props: object,) {
+		const overwrite_flag = this.settings.overwriteFlag
+		if (file instanceof TFile) {
+			await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+				// set property if it doesn't exist or if overwrite flag is set
+				for (const [key, value] of Object.entries(entity_props)) {
+					if (!frontmatter.hasOwnProperty(key) || overwrite_flag) {
+						frontmatter[key] = value
+					}
+				}
+			})
+		}
+	}
+
+	entitySearchCallback(search_term: string, open_new_tab = true) {
+		this.fetchEntities(search_term, (entity_suggestions) => {
+			const emodal = new EntitySuggestionModal(this.app, entity_suggestions, (result: Entity) => {
+				// console.log(result)
+				const entity_props = this.generatePropertiesFromEntity(result)
+				// console.log(this.settings)
+				const path = this.settings.entityFolder + "/" + result.displayName + ".md"
+
+				// eslint-disable-next-line
+				let entity_file = this.app.vault.getFileByPath(path)
+				if (!entity_file) {
+
+					// @ts-ignore
+					this.app.vault.create(this.settings.entityFolder + "/" + result.displayName + ".md", "", (new_file) => {
+						this.updateFrontMatter(new_file, entity_props)
+						if (open_new_tab) {
+							this.app.workspace.getLeaf('tab').openFile(new_file)
+						}
+					})
+				} else {
+					this.updateFrontMatter(entity_file, entity_props)
+					if (open_new_tab) {
+						this.app.workspace.getLeaf('tab').openFile(entity_file)
+					}
+
+				}
+			})
+			emodal.setPlaceholder(search_term);
+			emodal.open()
 		})
 	}
 
 	async onload() {
 		await this.loadSettings();
 		this.addCommand({
-			id: 'search-entity-command',
-			name: 'Search entity',
+			id: 'link-selection-command',
+			name: 'Link selection to entity',
 			editorCallback: (editor: Editor, view: MarkdownView) => {
-				const search_term = editor.getSelection();
-				// editor.replaceSelection('Sample Editor Command');
-				this.fetchEntities(search_term, (entity_suggestions) => {
-					const emodal = new EntitySuggestionModal(this.app, entity_suggestions, (result: Entity) => {
-						// console.log(result)
-						const property_string = this.generatePropertiesFromEntity(result)
-						// console.log(this.settings)
-						this.app.vault.create(this.settings.entityFolder + "/" + result.displayName + ".md", property_string).then(value => {
-							// console.log(value)
-							this.app.workspace.getLeaf('tab').openFile(value)
-						}, error => {
-							console.log(error)
-						})
-
-					})
-					emodal.setPlaceholder(search_term);
-					emodal.open()
-				})
+				const search_term = editor.getSelection()?.toString();
+				this.entitySearchCallback(search_term)
 			}
 		});
+
+		this.addCommand({
+			id: 'link-active-note-command',
+			name: 'Link active note to entity',
+			editorCallback: (editor: Editor, view: MarkdownView) => {
+				const search_term = this.app.workspace.getActiveFile()?.basename.toString();
+				// console.log(search_term)
+				if (!search_term) {
+					return
+				}
+				this.entitySearchCallback(search_term, false)
+			}
+		});
+
+		// bind click event to active note
+		this.registerEvent(
+			this.app.workspace.on("editor-menu", (menu, editor, view) => {
+				menu.addItem((item) => {
+					item
+						.setTitle("Link selection to entity")
+						.setIcon("document")
+						.onClick(async () => {
+							const search_term = editor.getSelection();
+							this.entitySearchCallback(search_term)
+						});
+
+				})
+
+			}))
+		this.registerEvent(
+			this.app.workspace.on("editor-menu", (menu, editor, view) => {
+				menu.addItem((item) => {
+					item
+						.setTitle("Link active note to entity")
+						.setIcon("document")
+						.onClick(async () => {
+							const search_term = this.app.workspace.getActiveFile()?.basename.toString();
+							// console.log(search_term)
+							if (!search_term) {
+								return
+							}
+							this.entitySearchCallback(search_term, false)
+						});
+
+				})
+
+			}))
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new EntityLinkerSettingsTab(this.app, this));
@@ -212,5 +295,16 @@ class EntityLinkerSettingsTab extends PluginSettingTab {
 				this.plugin.settings.entityFolder = val.path;
 				await this.plugin.saveSettings();
 			});
+
+		new Setting(containerEl)
+			.setName("Overwrite existing properties")
+			.setDesc("If checked, existing properties will be overwritten")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.overwriteFlag)
+					.onChange(async (value) => {
+						this.plugin.settings.overwriteFlag = value;
+						await this.plugin.saveSettings();
+					}));
 	}
 }
