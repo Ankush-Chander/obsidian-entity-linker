@@ -132,16 +132,20 @@ export default class EntityLinker extends Plugin {
 		})
 	}
 
-	async updateFrontMatter(file: TAbstractFile, entity_props: object,) {
+	async updateFrontMatter(file: TAbstractFile, entity_props: object, callback: () => void) {
+		console.log(typeof file)
 		const overwrite_flag = this.settings.overwriteFlag
 		if (file instanceof TFile) {
 			await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
 				// set property if it doesn't exist or if overwrite flag is set
+				console.log(frontmatter)
 				for (const [key, value] of Object.entries(entity_props)) {
 					if (!frontmatter.hasOwnProperty(key) || overwrite_flag) {
 						frontmatter[key] = value
 					}
 				}
+				console.log(frontmatter)
+				callback()
 			})
 		}
 	}
@@ -157,19 +161,26 @@ export default class EntityLinker extends Plugin {
 				// eslint-disable-next-line
 				let entity_file = this.app.vault.getFileByPath(path)
 				if (!entity_file) {
-
+					console.log("file not found: " + path)
 					// @ts-ignore
-					this.app.vault.create(this.settings.entityFolder + "/" + result.displayName + ".md", "", (new_file) => {
-						this.updateFrontMatter(new_file, entity_props)
+					this.app.vault.create(this.settings.entityFolder + "/" + result.displayName + ".md", "").then((new_file) => {
+							this.updateFrontMatter(new_file, entity_props, () => {
+								if (open_new_tab) {
+									this.app.workspace.getLeaf('tab').openFile(new_file)
+								}
+							})
+						},
+						() => {
+							console.log("failed to create file")
+						})
+				} else {
+					this.updateFrontMatter(entity_file, entity_props, () => {
 						if (open_new_tab) {
-							this.app.workspace.getLeaf('tab').openFile(new_file)
+							// @ts-ignore
+							this.app.workspace.getLeaf('tab').openFile(entity_file)
 						}
 					})
-				} else {
-					this.updateFrontMatter(entity_file, entity_props)
-					if (open_new_tab) {
-						this.app.workspace.getLeaf('tab').openFile(entity_file)
-					}
+
 
 				}
 			})
@@ -271,7 +282,7 @@ class EntityLinkerSettingsTab extends PluginSettingTab {
 		containerEl.empty();
 
 		new Setting(containerEl)
-			.setName("Polite Email")
+			.setName("Polite email")
 			.setDesc("Adding email to openalex API requests(for faster and more consistent response times)")
 			.addText((text) =>
 				text
