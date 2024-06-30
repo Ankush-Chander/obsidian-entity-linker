@@ -79,7 +79,9 @@ You can install this plugin within Obsidian by doing the following:
 
 ### Acknowledgement
 
-1. Thanks to [OpenAlex](https://openalex.org/) team for providing free for use API over scholarly works
-2. Thanks to [Obsidian](htts://obsidian.md]) team for upholding malleability in the product that allows people to add
-   and share new features
+1. Many thanks to [
+Shaun Martin](https://github.com/inhumantsar) for [File Suggestion Component](https://github.com/inhumantsar/obsidian-file-suggestion-component) which this plugin relies on.
+2. Thanks to [OpenAlex](https://openalex.org/) team for providing free for use API over scholarly works.
+3. Thanks to [Obsidian](htts://obsidian.md]) team for upholding malleability in the product that allows people to add
+   and share new features.
    without hassle.
