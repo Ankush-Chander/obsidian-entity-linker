@@ -192,7 +192,7 @@ export default class EntityLinker extends Plugin {
 	async onload() {
 		await this.loadSettings();
 		this.addCommand({
-			id: 'link-selection-command',
+			id: 'link-selection',
 			name: 'Link selection to entity',
 			editorCallback: (editor: Editor, view: MarkdownView) => {
 				const search_term = editor.getSelection()?.toString();
@@ -201,7 +201,7 @@ export default class EntityLinker extends Plugin {
 		});
 
 		this.addCommand({
-			id: 'link-active-note-command',
+			id: 'link-active-note',
 			name: 'Link active note to entity',
 			editorCallback: (editor: Editor, view: MarkdownView) => {
 				const search_term = this.app.workspace.getActiveFile()?.basename.toString();
@@ -249,9 +249,6 @@ export default class EntityLinker extends Plugin {
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new EntityLinkerSettingsTab(this.app, this));
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
 	}
 
 	onunload() {
