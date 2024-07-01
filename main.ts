@@ -98,7 +98,8 @@ export default class EntityLinker extends Plugin {
 			if (typeof (value) == "string" || Array.isArray(value)) {
 				entity_props[key] = value
 				// property_string += key + ": " + value + "\n"
-			} else if (typeof (value) == "object") {
+			} else if (value && typeof (value) == "object") {
+				// console.log(key + ":" + value)
 				// const suffix = key == "ids" ? "_id" : ""
 				for (const [key2, value2] of Object.entries(value)) {
 					entity_props[key2] = value2 //property_string += key2 + ": " + value2 + "\n"
