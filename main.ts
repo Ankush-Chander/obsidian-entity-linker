@@ -3,7 +3,7 @@ import {
 	Editor,
 	MarkdownView,
 	Plugin,
-	PluginSettingTab,
+	PluginSettingTab, requestUrl,
 	Setting,
 	SuggestModal, TAbstractFile, TFile,
 } from 'obsidian';
@@ -22,9 +22,11 @@ interface Ids {
 }
 
 interface Entity {
-	displayName: string;
+	display_name: string;
+	hint: string
 	description: string;
 	ids: Ids
+	"wikidata entity id": string
 }
 
 interface EntityLinkerSettings {
@@ -42,152 +44,158 @@ const DEFAULT_SETTINGS: EntityLinkerSettings = {
 }
 
 export class EntitySuggestionModal extends SuggestModal<Entity> {
-	// Returns all available suggestions.
-	entities: Entity[];
-	result: object
+	search_term: string
+	polite_email: string
 	onSubmit: (result: object) => void;
 
-	constructor(app: App, headings: Entity[], onSubmit: (result: object) => void) {
+	constructor(app: App, search_term: string, polite_email: string, onSubmit: (result: object) => void) {
 		super(app);
-		this.entities = headings;
+		this.polite_email = polite_email
+		this.search_term = search_term
 		this.onSubmit = onSubmit;
 
 	}
 
 	onOpen() {
-		// console.log("inside onOpen");
 		super.onOpen();
-	}
-
-	getSuggestions(query: string): Entity[] {
-		return this.entities.filter((item) =>
-			item.displayName.toLowerCase().includes(query.toLowerCase())
-		);
-	}
-
-	// Renders each suggestion item.
-	renderSuggestion(entity: Entity, el: HTMLElement) {
-		el.createEl("div", {text: entity.displayName});
-		el.createEl("small", {text: entity.description ? entity.description : ""});
-	}
-
-
-	onChooseSuggestion(entity: Entity, evt: MouseEvent | KeyboardEvent) {
-		this.onSubmit(entity);
-	}
-}
-
-export default class EntityLinker extends Plugin {
-	settings: EntityLinkerSettings;
-
-	async userAction(url: any, callback: (arg0: any) => void) {
-		const response = await fetch(url, {
-			method: 'GET',
-			headers: {
-				'Content-Type': 'application/json'
-			}
-		});
-		const result = await response.json();
-		callback(result)
-	}
-
-	generatePropertiesFromEntity(entity: Entity) {
-		const entity_props: { [key: string]: any } = {};
-
-		for (const [key, value] of Object.entries(entity)) {
-			if (typeof (value) == "string" || Array.isArray(value)) {
-				entity_props[key] = value
-				// property_string += key + ": " + value + "\n"
-			} else if (value && typeof (value) == "object") {
-				// console.log(key + ":" + value)
-				// const suffix = key == "ids" ? "_id" : ""
-				for (const [key2, value2] of Object.entries(value)) {
-					entity_props[key2] = value2 //property_string += key2 + ": " + value2 + "\n"
-				}
-			}
+		// workaround to populate input in case text selected in editor
+		if (this.search_term) {
+			this.inputEl.value = this.search_term;
+			this.inputEl.dispatchEvent(new InputEvent("input"));
 		}
-		return entity_props
 	}
 
 	isValidEmail(email: string) {
 		return /\S+@\S+\.\S+/.test(email);
 	}
 
-	fetchEntities(search_term: string, callback: (arg0: any) => void) {
-		let base_url = "https://api.openalex.org/concepts?"
-		if (this.settings.politeEmail != "" && this.isValidEmail(this.settings.politeEmail)) {
-			base_url += "mailto=" + this.settings.politeEmail + "&"
+	async getSuggestions(query: string) {
+		if (!query) {
+			return []
 		}
-		this.userAction(base_url + "search=" + search_term, (response) => {
-			// console.log(response)
-			const results = response.results
-			const entity_suggestions = results.map((result: any) => {
-				return {
-					"wikidata entity id": result.ids.wikidata.split("/").last(),
-					displayName: result.display_name,
-					description: result.description,
-					ids: result.ids
-				}
-			})
-			callback(entity_suggestions)
+		let url = "https://api.openalex.org/autocomplete/concepts?q=" + query
+		if (this.polite_email && this.isValidEmail(this.polite_email)) {
+			url += "&mailto=" + this.polite_email
+		}
+		// console.log(url)
+		const response = await requestUrl({
+			url: url,
+			method: 'GET',
+			headers: {
+				'Content-Type': 'application/json'
+			}
 		})
+		const res = response.json
+		const results = res.results.map((result: any) => {
+			return {
+				display_name: result.display_name,
+				hint: result.hint,
+				ids: {"openalex": result.id.split("/").last()}
+			}
+		})
+		return results
 	}
 
+
+	// Renders each suggestion item.
+	renderSuggestion(entity: Entity, el: HTMLElement) {
+		el.createEl("div", {text: entity.display_name});
+		el.createEl("small", {text: entity.hint ? entity.hint : ""});
+	}
+
+	async generatePropertiesFromEntity(entity: Entity) {
+		let concept_url = "https://api.openalex.org/concepts/" + entity.ids.openalex
+		if (this.polite_email && this.isValidEmail(this.polite_email)) {
+			concept_url += "?mailto=" + this.polite_email
+		}
+
+		const response = await requestUrl({
+			url: concept_url,
+			method: 'GET',
+			headers: {
+				'Content-Type': 'application/json'
+			}
+		})
+		const entity_result = response.json
+
+		const entity_props: { [key: string]: any } = {};
+		const properties_of_interest = ["wikidata entity id", "display_name", "description", "ids"]
+		for (const [key, value] of Object.entries(entity_result)) {
+			if (!properties_of_interest.includes(key)) {
+				continue
+			}
+			if (typeof value == "string" || Array.isArray(value)) {
+				entity_props[key] = value
+				// property_string += key + ": " + value + "\n"
+			} else if (value && typeof (value) == "object") {
+				for (const [key2, value2] of Object.entries(value)) {
+					entity_props[key2] = value2 //property_string += key2 + ": " + value2 + "\n"
+				}
+			}
+		}
+
+
+		entity_props["wikidata entity id"] = entity_props["wikidata"] ? entity_props["wikidata"].split("/").last() : ""
+		// console.log(entity_props)
+		return entity_props
+	}
+
+	async onChooseSuggestion(entity: Entity, evt: MouseEvent | KeyboardEvent) {
+		// fetch concept properties
+		const entity_props = await this.generatePropertiesFromEntity(entity)
+		this.onSubmit(entity_props)
+	}
+}
+
+export default class EntityLinker extends Plugin {
+	settings: EntityLinkerSettings;
+
+
 	async updateFrontMatter(file: TAbstractFile, entity_props: object, callback: () => void) {
-		console.log(typeof file)
 		const overwrite_flag = this.settings.overwriteFlag
 		if (file instanceof TFile) {
 			await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
 				// set property if it doesn't exist or if overwrite flag is set
-				console.log(frontmatter)
+				// console.log(frontmatter)
 				for (const [key, value] of Object.entries(entity_props)) {
 					if (!frontmatter.hasOwnProperty(key) || overwrite_flag) {
 						frontmatter[key] = value
 					}
 				}
-				console.log(frontmatter)
 				callback()
 			})
 		}
 	}
 
-	entitySearchCallback(search_term: string, open_new_tab = true) {
-		this.fetchEntities(search_term, (entity_suggestions) => {
-			const emodal = new EntitySuggestionModal(this.app, entity_suggestions, (result: Entity) => {
-				// console.log(result)
-				const entity_props = this.generatePropertiesFromEntity(result)
-				// console.log(this.settings)
-				const path = this.settings.entityFolder + "/" + result.displayName + ".md"
-
-				// eslint-disable-next-line
-				let entity_file = this.app.vault.getFileByPath(path)
-				if (!entity_file) {
-					console.log("file not found: " + path)
-					// @ts-ignore
-					this.app.vault.create(this.settings.entityFolder + "/" + result.displayName + ".md", "").then((new_file) => {
-							this.updateFrontMatter(new_file, entity_props, () => {
-								if (open_new_tab) {
-									this.app.workspace.getLeaf('tab').openFile(new_file)
-								}
-							})
-						},
-						() => {
-							console.log("failed to create file")
-						})
-				} else {
-					this.updateFrontMatter(entity_file, entity_props, () => {
-						if (open_new_tab) {
-							// @ts-ignore
-							this.app.workspace.getLeaf('tab').openFile(entity_file)
-						}
-					})
-
-
+	async entitySearchCallback(search_term: string, open_new_tab = true) {
+		const polite_email = this.settings.politeEmail
+		const emodal = new EntitySuggestionModal(this.app, search_term, polite_email, async (result: Entity) => {
+			const path = this.settings.entityFolder + "/" + result.display_name + ".md"
+			// eslint-disable-next-line
+			let entity_file = this.app.vault.getFileByPath(path)
+			if (!entity_file) {
+				// @ts-ignore
+				const new_file = await this.app.vault.create(this.settings.entityFolder + "/" + result.display_name + ".md", "")
+				if (!new_file) {
+					console.error("failed to create file")
+					return
 				}
-			})
-			emodal.setPlaceholder(search_term);
-			emodal.open()
+				this.updateFrontMatter(new_file, result, () => {
+					if (open_new_tab) {
+						this.app.workspace.getLeaf('tab').openFile(new_file)
+					}
+				})
+			} else {
+				this.updateFrontMatter(entity_file, result, () => {
+					if (open_new_tab) {
+						// @ts-ignore
+						this.app.workspace.getLeaf('tab').openFile(entity_file)
+					}
+				})
+			}
 		})
+		emodal.open()
+
 	}
 
 	async onload() {
@@ -195,9 +203,9 @@ export default class EntityLinker extends Plugin {
 		this.addCommand({
 			id: 'link-selection',
 			name: 'Link selection to entity',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
+			editorCallback: async (editor: Editor, view: MarkdownView) => {
 				const search_term = editor.getSelection()?.toString();
-				this.entitySearchCallback(search_term)
+				await this.entitySearchCallback(search_term)
 			}
 		});
 
@@ -227,10 +235,6 @@ export default class EntityLinker extends Plugin {
 						});
 
 				})
-
-			}))
-		this.registerEvent(
-			this.app.workspace.on("editor-menu", (menu, editor, view) => {
 				menu.addItem((item) => {
 					item
 						.setTitle("Link active note to entity")
