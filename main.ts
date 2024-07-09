@@ -47,13 +47,14 @@ export class EntitySuggestionModal extends SuggestModal<Entity> {
 	search_term: string
 	polite_email: string
 	onSubmit: (result: object) => void;
+	private debouncedGetSuggestions: any;
 
 	constructor(app: App, search_term: string, polite_email: string, onSubmit: (result: object) => void) {
 		super(app);
 		this.polite_email = polite_email
 		this.search_term = search_term
 		this.onSubmit = onSubmit;
-
+		this.debouncedGetSuggestions = this.debounce(this.getSuggestionsImpl, 500);
 	}
 
 	onOpen() {
@@ -64,6 +65,17 @@ export class EntitySuggestionModal extends SuggestModal<Entity> {
 			this.inputEl.dispatchEvent(new InputEvent("input"));
 		}
 	}
+	debounce(func: { (query: string): Promise<any>; apply?: any; }, wait: number | undefined) {
+		let timeout: string | number | NodeJS.Timeout | undefined;
+		return function (...args: any) {
+			// eslint-disable-next-line @typescript-eslint/no-this-alias
+			const context = this;
+			clearTimeout(timeout);
+			return new Promise((resolve) => {
+				timeout = setTimeout(() => resolve(func.apply(context, args)), wait);
+			});
+		};
+	}
 
 	isValidEmail(email: string) {
 		return /\S+@\S+\.\S+/.test(email);
@@ -73,20 +85,10 @@ export class EntitySuggestionModal extends SuggestModal<Entity> {
 		if (!query) {
 			return []
 		}
-		let url = "https://api.openalex.org/autocomplete/concepts?q=" + query
-		if (this.polite_email && this.isValidEmail(this.polite_email)) {
-			url += "&mailto=" + this.polite_email
-		}
-		// console.log(url)
-		const response = await requestUrl({
-			url: url,
-			method: 'GET',
-			headers: {
-				'Content-Type': 'application/json'
-			}
-		})
-		const res = response.json
-		const results = res.results.map((result: any) => {
+
+		let results = await this.debouncedGetSuggestions(query)
+		// console.log(results)
+		results = results.map((result: any) => {
 			return {
 				display_name: result.display_name,
 				hint: result.hint,
@@ -103,6 +105,22 @@ export class EntitySuggestionModal extends SuggestModal<Entity> {
 		return results
 	}
 
+
+	async getSuggestionsImpl(query: string) {
+		let url = "https://api.openalex.org/autocomplete/concepts?q=" + query
+		if (this.polite_email && this.isValidEmail(this.polite_email)) {
+			url += "&mailto=" + this.polite_email
+		}
+		const response = await requestUrl({
+			url: url,
+			method: 'GET',
+			headers: {
+				'Content-Type': 'application/json'
+			}
+		})
+		const res = response.json
+		return res.results
+	}
 
 	// Renders each suggestion item.
 	renderSuggestion(entity: Entity, el: HTMLElement) {
