@@ -93,6 +93,13 @@ export class EntitySuggestionModal extends SuggestModal<Entity> {
 				ids: {"openalex": result.id.split("/").last()}
 			}
 		})
+		if (results.length == 0) {
+			const empty_result = {
+				display_name: query,
+				hint: "Create empty note"
+			}
+			return [empty_result]
+		}
 		return results
 	}
 
@@ -104,6 +111,15 @@ export class EntitySuggestionModal extends SuggestModal<Entity> {
 	}
 
 	async generatePropertiesFromEntity(entity: Entity) {
+		if (!entity.hasOwnProperty("ids")) {
+			const empty_result = {
+				display_name: entity.display_name,
+				description: "",
+				wikipedia: "https://en.wikipedia.org/wiki/Special:Search?go=Go&search=" + encodeURIComponent(entity.display_name),
+				wikidata: "https://www.wikidata.org/w/index.php?search=" + encodeURIComponent(entity.display_name)
+			}
+			return empty_result
+		}
 		let concept_url = "https://api.openalex.org/concepts/" + entity.ids.openalex
 		if (this.polite_email && this.isValidEmail(this.polite_email)) {
 			concept_url += "?mailto=" + this.polite_email
