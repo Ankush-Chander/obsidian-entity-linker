@@ -65,6 +65,7 @@ export class EntitySuggestionModal extends SuggestModal<Entity> {
 			this.inputEl.dispatchEvent(new InputEvent("input"));
 		}
 	}
+
 	debounce(func: { (query: string): Promise<any>; apply?: any; }, wait: number | undefined) {
 		let timeout: string | number | NodeJS.Timeout | undefined;
 		return function (...args: any) {
@@ -128,16 +129,38 @@ export class EntitySuggestionModal extends SuggestModal<Entity> {
 		el.createEl("small", {text: entity.hint ? entity.hint : ""});
 	}
 
+	async getRedirectedUrl(url: string) {
+		const response = await requestUrl({
+			"url": url,
+			"method": "GET",
+			"headers": {
+				"Content-Type": "text/html"
+			}
+		})
+
+		const html_content = response.text
+		const el = document.createElement('html');
+		el.innerHTML = html_content;
+		const canonical_link = el.querySelector('link[rel="canonical"]');
+
+		// Get the href attribute
+		const href_value = canonical_link ? canonical_link.getAttribute('href') : null;
+		return href_value
+	}
+
 	async generatePropertiesFromEntity(entity: Entity) {
 		if (!entity.hasOwnProperty("ids")) {
+			const wiki_search_url = "https://en.wikipedia.org/wiki/Special:Search?go=Go&search=" + encodeURIComponent(entity.display_name);
+			const redirect_url = await this.getRedirectedUrl(wiki_search_url);
 			const empty_result = {
 				display_name: entity.display_name,
 				description: "",
-				wikipedia: "https://en.wikipedia.org/wiki/Special:Search?go=Go&search=" + encodeURIComponent(entity.display_name),
+				wikipedia: redirect_url ? redirect_url : wiki_search_url,
 				wikidata: "https://www.wikidata.org/w/index.php?search=" + encodeURIComponent(entity.display_name)
 			}
 			return empty_result
 		}
+
 		let concept_url = "https://api.openalex.org/concepts/" + entity.ids.openalex
 		if (this.polite_email && this.isValidEmail(this.polite_email)) {
 			concept_url += "?mailto=" + this.polite_email
