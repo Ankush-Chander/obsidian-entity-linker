@@ -30,6 +30,7 @@ interface Entity {
 	"wikidata entity id": string
 }
 
+
 interface EntityLinkerSettings {
 	mySetting: string;
 	entityFolder: string
@@ -242,6 +243,21 @@ export class EntitySuggestionModal extends SuggestModal<Entity> {
 	}
 }
 
+
+interface EntityProps {
+// ["display_name", "description", "openalex", "wikidata", "mag", "wikipedia", "umls_cui",
+// 				"wikidata entity id"]
+	display_name: string
+	description: string
+	"openalex": string
+	wikidata: string
+	wikipedia: string
+	umls_cui: string
+	"mag": string
+	"wikidata entity id": string
+	"hint"?: string
+}
+
 export default class EntityLinker extends Plugin {
 	settings: EntityLinkerSettings;
 
@@ -265,7 +281,7 @@ export default class EntityLinker extends Plugin {
 
 	async entitySearchCallback(search_term: string, open_new_tab = true) {
 		const polite_email = this.settings.politeEmail
-		const emodal = new EntitySuggestionModal(this.app, search_term, polite_email, async (result: Entity) => {
+		const emodal = new EntitySuggestionModal(this.app, search_term, polite_email, async (result: EntityProps) => {
 			// filter acceptable properties
 			result = _.pick(result, ["display_name", "description", "openalex", "wikidata", "mag", "wikipedia", "umls_cui",
 				"wikidata entity id"])
