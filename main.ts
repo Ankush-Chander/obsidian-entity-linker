@@ -8,6 +8,7 @@ import {
 	SuggestModal, TAbstractFile, TFile,
 } from 'obsidian';
 
+import * as _ from 'lodash';
 
 import {FileSuggestionComponent} from "obsidian-file-suggestion-component";
 
@@ -97,11 +98,8 @@ export class EntitySuggestionModal extends SuggestModal<Entity> {
 			}
 		})
 		if (results.length == 0) {
-			const empty_result = {
-				display_name: query,
-				hint: "Create empty note"
-			}
-			return [empty_result]
+			const wiki_result = await this.getWikiDataFromSearchTerm(query)
+			return [wiki_result]
 		}
 		return results
 	}
@@ -129,6 +127,55 @@ export class EntitySuggestionModal extends SuggestModal<Entity> {
 		el.createEl("small", {text: entity.hint ? entity.hint : ""});
 	}
 
+	async getWikiDataFromSearchTerm(search_term: string) {
+		const wiki_search_url = "https://en.wikipedia.org/wiki/Special:Search?go=Go&search=" + encodeURIComponent(search_term);
+		const wikidata_search_url = "https://www.wikidata.org/w/index.php?search=" + encodeURIComponent(search_term)
+
+		const response = await requestUrl({
+			"url": wiki_search_url,
+			"method": "GET",
+			"headers": {
+				"Content-Type": "text/html"
+			}
+		})
+
+		const html_content = response.text
+		const el = document.createElement('html');
+		el.innerHTML = html_content;
+		const scriptTag = el.querySelector('script[type="application/ld+json"]');
+		if (scriptTag) {
+			// Get the text content of the script tag
+			const jsonContent = scriptTag.textContent;
+			try {
+				// Parse the JSON content
+				const json_data = jsonContent ? JSON.parse(jsonContent) : null;
+				// console.log('Extracted JSON:', json_data);
+
+				const entity = {
+					display_name: json_data.hasOwnProperty("name") ? json_data.name : search_term,
+					wikipedia: json_data.hasOwnProperty("url") ? json_data.url : wiki_search_url,
+					wikidata: json_data.hasOwnProperty("mainEntity") ? json_data.mainEntity : wikidata_search_url,
+					"wikidata entity id": json_data.hasOwnProperty("mainEntity") ? json_data.mainEntity.split("/").last() : "",
+					description: json_data.hasOwnProperty("headline") ? json_data.headline : "",
+					hint: json_data.hasOwnProperty("headline") ? json_data.headline : ""
+				}
+				return entity;
+			} catch (error) {
+				console.error('Error parsing JSON:', error);
+			}
+		} else {
+			// console.error(search_term + ': No script tag with type "application/ld+json" found.');
+		}
+		return {
+			display_name: search_term,
+			wikipedia: wiki_search_url,
+			wikidata: wikidata_search_url,
+			description: "",
+			"wikidata entity id": "",
+			hint: "Create empty note"
+		};
+	}
+
 	async getRedirectedUrl(url: string) {
 		const response = await requestUrl({
 			"url": url,
@@ -150,17 +197,8 @@ export class EntitySuggestionModal extends SuggestModal<Entity> {
 
 	async generatePropertiesFromEntity(entity: Entity) {
 		if (!entity.hasOwnProperty("ids")) {
-			const wiki_search_url = "https://en.wikipedia.org/wiki/Special:Search?go=Go&search=" + encodeURIComponent(entity.display_name);
-			const redirect_url = await this.getRedirectedUrl(wiki_search_url);
-			const empty_result = {
-				display_name: entity.display_name,
-				description: "",
-				wikipedia: redirect_url ? redirect_url : wiki_search_url,
-				wikidata: "https://www.wikidata.org/w/index.php?search=" + encodeURIComponent(entity.display_name)
-			}
-			return empty_result
+			return entity
 		}
-
 		let concept_url = "https://api.openalex.org/concepts/" + entity.ids.openalex
 		if (this.polite_email && this.isValidEmail(this.polite_email)) {
 			concept_url += "?mailto=" + this.polite_email
@@ -211,6 +249,7 @@ export default class EntityLinker extends Plugin {
 	async updateFrontMatter(file: TAbstractFile, entity_props: object, callback: () => void) {
 		const overwrite_flag = this.settings.overwriteFlag
 		if (file instanceof TFile) {
+
 			await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
 				// set property if it doesn't exist or if overwrite flag is set
 				// console.log(frontmatter)
@@ -227,6 +266,10 @@ export default class EntityLinker extends Plugin {
 	async entitySearchCallback(search_term: string, open_new_tab = true) {
 		const polite_email = this.settings.politeEmail
 		const emodal = new EntitySuggestionModal(this.app, search_term, polite_email, async (result: Entity) => {
+			// filter acceptable properties
+			result = _.pick(result, ["display_name", "description", "openalex", "wikidata", "mag", "wikipedia", "umls_cui",
+				"wikidata entity id"])
+
 			const path = this.settings.entityFolder + "/" + result.display_name + ".md"
 			// eslint-disable-next-line
 			let entity_file = this.app.vault.getFileByPath(path)
