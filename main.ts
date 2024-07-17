@@ -279,14 +279,18 @@ export default class EntityLinker extends Plugin {
 		}
 	}
 
-	async entitySearchCallback(search_term: string, open_new_tab = true) {
+	async entitySearchCallback(search_term: string, is_active_note = false) {
 		const polite_email = this.settings.politeEmail
 		const emodal = new EntitySuggestionModal(this.app, search_term, polite_email, async (result: EntityProps) => {
 			// filter acceptable properties
 			result = _.pick(result, ["display_name", "description", "openalex", "wikidata", "mag", "wikipedia", "umls_cui",
 				"wikidata entity id"])
-
-			const path = this.settings.entityFolder + "/" + result.display_name + ".md"
+			let path = ""
+			if (is_active_note) {
+				path = this.settings.entityFolder + "/" + search_term + ".md"
+			} else {
+				path = this.settings.entityFolder + "/" + result.display_name + ".md"
+			}
 			// eslint-disable-next-line
 			let entity_file = this.app.vault.getFileByPath(path)
 			if (!entity_file) {
@@ -297,13 +301,13 @@ export default class EntityLinker extends Plugin {
 					return
 				}
 				this.updateFrontMatter(new_file, result, () => {
-					if (open_new_tab) {
+					if (!is_active_note) {
 						this.app.workspace.getLeaf('tab').openFile(new_file)
 					}
 				})
 			} else {
 				this.updateFrontMatter(entity_file, result, () => {
-					if (open_new_tab) {
+					if (!is_active_note) {
 						// @ts-ignore
 						this.app.workspace.getLeaf('tab').openFile(entity_file)
 					}
@@ -321,7 +325,7 @@ export default class EntityLinker extends Plugin {
 			name: 'Link selection to entity',
 			editorCallback: async (editor: Editor, view: MarkdownView) => {
 				const search_term = editor.getSelection()?.toString();
-				await this.entitySearchCallback(search_term)
+				await this.entitySearchCallback(search_term, false)
 			}
 		});
 
@@ -334,7 +338,7 @@ export default class EntityLinker extends Plugin {
 				if (!search_term) {
 					return
 				}
-				this.entitySearchCallback(search_term, false)
+				this.entitySearchCallback(search_term, true)
 			}
 		});
 
