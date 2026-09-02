@@ -48,9 +48,10 @@ named things — are filed to the **entity folder**.
 #### From github
 
 1. Go to the [Releases](https://github.com/Ankush-Chander/obsidian-entity-linker/releases) page.
-2. Download the latest obsidian-entity-linker-${version}.zip.
-3. Extract its contents.
-4. Move the contents into /your-vault/.obsidian/plugins/obsidian-entity-linker/.
+2. From the latest release, download `main.js`, `manifest.json` and `styles.css` from the **Assets** section.
+   The auto-generated "Source code" archives will not work: `main.js` is a build artifact and is not committed.
+3. Create the folder `/your-vault/.obsidian/plugins/entity-linker/` if it does not already exist.
+4. Move the three downloaded files into that folder.
 5. Enable the plugin in Obsidian:
 	- Open Obsidian, go to Settings > Community Plugins.
 	- Make sure Restricted mode is off.
