@@ -1,7 +1,9 @@
 import {
 	App,
 	Editor,
+	EditorPosition,
 	MarkdownView,
+	Notice,
 	Plugin,
 	PluginSettingTab, requestUrl,
 	Setting,
@@ -34,15 +36,41 @@ interface Entity {
 interface EntityLinkerSettings {
 	mySetting: string;
 	entityFolder: string
+	conceptFolder: string
 	politeEmail: string
 	overwriteFlag: boolean
+	insertLinkOnSelection: boolean
+	addAliases: boolean
 }
 
 const DEFAULT_SETTINGS: EntityLinkerSettings = {
 	mySetting: 'default',
 	entityFolder: '',
+	conceptFolder: '',
 	politeEmail: '',
-	overwriteFlag: false
+	overwriteFlag: false,
+	insertLinkOnSelection: true,
+	addAliases: true
+}
+
+// Characters Obsidian disallows in file names, plus the ones that break wikilinks.
+const ILLEGAL_FILENAME_CHARS = /[*"\\/<>:|?#^[\]]/g;
+
+function sanitizeFileName(name: string): string {
+	return name.replace(ILLEGAL_FILENAME_CHARS, " ").replace(/\s+/g, " ").trim();
+}
+
+function isEmptyValue(value: unknown): boolean {
+	if (value === null || value === undefined) {
+		return true
+	}
+	if (typeof value === "string") {
+		return value.trim() === ""
+	}
+	if (Array.isArray(value)) {
+		return value.length === 0
+	}
+	return false
 }
 
 export class EntitySuggestionModal extends SuggestModal<Entity> {
@@ -258,64 +286,235 @@ interface EntityProps {
 	"hint"?: string
 }
 
+/**
+ * Where the result of a lookup should land.
+ *
+ * `targetFile` annotates an existing note in place (active-note mode) and never
+ * creates anything. Otherwise the note is resolved-or-created in the folder the
+ * result's provenance routes to, and, when an editor range is supplied, the
+ * selection is replaced with a link to it.
+ */
+interface LinkContext {
+	targetFile?: TFile | null
+	editor?: Editor
+	range?: { from: EditorPosition, to: EditorPosition }
+	sourcePath?: string
+}
+
 export default class EntityLinker extends Plugin {
 	settings: EntityLinkerSettings;
 
 
-	async updateFrontMatter(file: TAbstractFile, entity_props: object, callback: () => void) {
+	async updateFrontMatter(file: TAbstractFile, entity_props: object, aliases: string[] = []) {
 		const overwrite_flag = this.settings.overwriteFlag
-		if (file instanceof TFile) {
+		if (!(file instanceof TFile)) {
+			return
+		}
 
-			await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
-				// set property if it doesn't exist or if overwrite flag is set
-				// console.log(frontmatter)
-				for (const [key, value] of Object.entries(entity_props)) {
-					if (!frontmatter.hasOwnProperty(key) || overwrite_flag) {
-						frontmatter[key] = value
+		await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+			// set property if it doesn't exist or if overwrite flag is set
+			for (const [key, value] of Object.entries(entity_props)) {
+				// never write blanks: an unresolved id should leave no property behind
+				if (isEmptyValue(value)) {
+					continue
+				}
+				// a blank existing property carries no information, so filling it is
+				// not an overwrite - this heals notes left with empty ids by earlier versions
+				if (!frontmatter.hasOwnProperty(key) || isEmptyValue(frontmatter[key]) || overwrite_flag) {
+					frontmatter[key] = value
+				}
+			}
+
+			// aliases are additive rather than overwritten, so hand-added ones survive
+			if (this.settings.addAliases && aliases.length) {
+				const existing: string[] = Array.isArray(frontmatter.aliases)
+					? frontmatter.aliases
+					: (typeof frontmatter.aliases === "string" && frontmatter.aliases ? [frontmatter.aliases] : [])
+				const merged = [...existing]
+				for (const alias of aliases) {
+					if (!merged.some((a) => String(a).toLowerCase() === alias.toLowerCase())) {
+						merged.push(alias)
 					}
 				}
-				callback()
-			})
+				if (merged.length) {
+					frontmatter.aliases = merged
+				}
+			}
+		})
+	}
+
+	/**
+	 * OpenAlex hits carry an `openalex` id and are scholarly concepts; the
+	 * Wikipedia/Wikidata fallback only fires for everything else, which is where
+	 * named entities come from. Route each to its own folder, falling back to the
+	 * entity folder so existing single-folder setups keep working.
+	 */
+	resolveFolder(entity_props: Partial<EntityProps>): string {
+		const is_concept = Boolean(entity_props.openalex)
+		if (is_concept && this.settings.conceptFolder) {
+			return this.settings.conceptFolder
+		}
+		return this.settings.entityFolder
+	}
+
+	async ensureFolder(folder_path: string) {
+		if (!folder_path) {
+			return
+		}
+		if (this.app.vault.getAbstractFileByPath(folder_path)) {
+			return
+		}
+		try {
+			await this.app.vault.createFolder(folder_path)
+		} catch (error) {
+			// folder created concurrently, or an illegal path - creation below will report it
 		}
 	}
 
-	async entitySearchCallback(search_term: string, is_active_note = false) {
+	/**
+	 * Look for the note anywhere in the vault before creating one, so a concept
+	 * already filed by hand isn't duplicated into the entity folder under a
+	 * different casing.
+	 */
+	findExistingNote(names: string[], source_path: string): TFile | null {
+		for (const name of names) {
+			if (!name) {
+				continue
+			}
+			const found = this.app.metadataCache.getFirstLinkpathDest(name, source_path)
+			if (found) {
+				return found
+			}
+		}
+		return null
+	}
+
+	async resolveOrCreateNote(entity_props: Partial<EntityProps>, search_term: string, source_path: string) {
+		const display_name = entity_props.display_name || search_term
+		const file_name = sanitizeFileName(display_name) || sanitizeFileName(search_term)
+		if (!file_name) {
+			new Notice("Entity Linker: could not derive a file name from this result")
+			return null
+		}
+
+		const existing = this.findExistingNote([file_name, display_name, search_term], source_path)
+		if (existing) {
+			return existing
+		}
+
+		const folder = this.resolveFolder(entity_props)
+		await this.ensureFolder(folder)
+		const path = (folder ? folder + "/" : "") + file_name + ".md"
+		try {
+			return await this.app.vault.create(path, "")
+		} catch (error) {
+			// most likely the file appeared between the lookup and the create
+			const raced = this.app.vault.getAbstractFileByPath(path)
+			if (raced instanceof TFile) {
+				return raced
+			}
+			console.error("Entity Linker: failed to create " + path, error)
+			new Notice("Entity Linker: failed to create note at " + path)
+			return null
+		}
+	}
+
+	/**
+	 * Replace the original selection with a link to `file`. The lookup is async and
+	 * the modal is dismissable, so the range is re-verified against the text that
+	 * was selected before anything is written.
+	 */
+	insertLink(file: TFile, context: LinkContext, search_term: string) {
+		const {editor, range} = context
+		if (!editor || !range) {
+			return false
+		}
+		if (editor.getRange(range.from, range.to) !== search_term) {
+			new Notice("Entity Linker: note updated, but the text moved - link not inserted")
+			return false
+		}
+		// keep the prose reading as written when the canonical title differs
+		const alias = file.basename.toLowerCase() === search_term.toLowerCase() ? undefined : search_term
+		const link = this.app.fileManager.generateMarkdownLink(file, context.sourcePath ?? "", undefined, alias)
+		editor.replaceRange(link, range.from, range.to)
+		return true
+	}
+
+	async entitySearchCallback(search_term: string, context: LinkContext = {}) {
 		const polite_email = this.settings.politeEmail
 		const emodal = new EntitySuggestionModal(this.app, search_term, polite_email, async (result: EntityProps) => {
 			// filter acceptable properties
-			result = _.pick(result, ["display_name", "description", "openalex", "wikidata", "mag", "wikipedia", "umls_cui",
+			const entity_props: Partial<EntityProps> = _.pick(result, ["display_name", "description", "openalex", "wikidata", "mag", "wikipedia", "umls_cui",
 				"wikidata entity id"])
-			let path = ""
-			if (is_active_note) {
-				path = this.settings.entityFolder + "/" + search_term + ".md"
-			} else {
-				path = this.settings.entityFolder + "/" + result.display_name + ".md"
+
+			// active-note mode annotates the note you are in; it never creates a file
+			if (context.targetFile) {
+				const aliases = this.aliasesFor(context.targetFile.basename, entity_props.display_name, search_term)
+				await this.updateFrontMatter(context.targetFile, entity_props, aliases)
+				new Notice("Entity Linker: linked " + context.targetFile.basename)
+				return
 			}
-			// eslint-disable-next-line
-			let entity_file = this.app.vault.getFileByPath(path)
-			if (!entity_file) {
-				// @ts-ignore
-				const new_file = await this.app.vault.create(this.settings.entityFolder + "/" + result.display_name + ".md", "")
-				if (!new_file) {
-					console.error("failed to create file")
-					return
-				}
-				this.updateFrontMatter(new_file, result, () => {
-					if (!is_active_note) {
-						this.app.workspace.getLeaf('tab').openFile(new_file)
-					}
-				})
-			} else {
-				this.updateFrontMatter(entity_file, result, () => {
-					if (!is_active_note) {
-						// @ts-ignore
-						this.app.workspace.getLeaf('tab').openFile(entity_file)
-					}
-				})
+
+			const source_path = context.sourcePath ?? ""
+			const note = await this.resolveOrCreateNote(entity_props, search_term, source_path)
+			if (!note) {
+				return
+			}
+
+			const aliases = this.aliasesFor(note.basename, entity_props.display_name, search_term)
+			await this.updateFrontMatter(note, entity_props, aliases)
+
+			const linked = this.settings.insertLinkOnSelection && this.insertLink(note, context, search_term)
+			if (!linked) {
+				// no link to anchor it, so surface the note the way it always did
+				this.app.workspace.getLeaf('tab').openFile(note)
 			}
 		})
 		emodal.open()
 
+	}
+
+	/**
+	 * Every name that should resolve to this note but isn't its file name -
+	 * the canonical title when it was sanitized, and the term actually selected.
+	 */
+	aliasesFor(basename: string, display_name?: string, search_term?: string): string[] {
+		const aliases: string[] = []
+		for (const candidate of [display_name, search_term]) {
+			if (!candidate) {
+				continue
+			}
+			const trimmed = candidate.trim()
+			if (!trimmed || trimmed.toLowerCase() === basename.toLowerCase()) {
+				continue
+			}
+			if (!aliases.some((a) => a.toLowerCase() === trimmed.toLowerCase())) {
+				aliases.push(trimmed)
+			}
+		}
+		return aliases
+	}
+
+	linkSelection(editor: Editor, view: MarkdownView) {
+		const search_term = editor.getSelection()?.toString();
+		if (!search_term) {
+			new Notice("Entity Linker: select some text first")
+			return
+		}
+		// capture the range now - the modal is async and the cursor will move
+		this.entitySearchCallback(search_term, {
+			editor: editor,
+			range: {from: editor.getCursor("from"), to: editor.getCursor("to")},
+			sourcePath: view.file?.path ?? ""
+		})
+	}
+
+	linkActiveNote(view: MarkdownView) {
+		const file = view.file ?? this.app.workspace.getActiveFile();
+		if (!file) {
+			return
+		}
+		this.entitySearchCallback(file.basename.toString(), {targetFile: file, sourcePath: file.path})
 	}
 
 	async onload() {
@@ -323,9 +522,8 @@ export default class EntityLinker extends Plugin {
 		this.addCommand({
 			id: 'link-selection',
 			name: 'Link selection to entity',
-			editorCallback: async (editor: Editor, view: MarkdownView) => {
-				const search_term = editor.getSelection()?.toString();
-				await this.entitySearchCallback(search_term, false)
+			editorCallback: (editor: Editor, view: MarkdownView) => {
+				this.linkSelection(editor, view)
 			}
 		});
 
@@ -333,12 +531,7 @@ export default class EntityLinker extends Plugin {
 			id: 'link-active-note',
 			name: 'Link active note to entity',
 			editorCallback: (editor: Editor, view: MarkdownView) => {
-				const search_term = this.app.workspace.getActiveFile()?.basename.toString();
-				// console.log(search_term)
-				if (!search_term) {
-					return
-				}
-				this.entitySearchCallback(search_term, true)
+				this.linkActiveNote(view)
 			}
 		});
 
@@ -350,8 +543,7 @@ export default class EntityLinker extends Plugin {
 						.setTitle("Link selection to entity")
 						.setIcon("document")
 						.onClick(async () => {
-							const search_term = editor.getSelection();
-							this.entitySearchCallback(search_term)
+							this.linkSelection(editor, view as MarkdownView)
 						});
 
 				})
@@ -360,12 +552,7 @@ export default class EntityLinker extends Plugin {
 						.setTitle("Link active note to entity")
 						.setIcon("document")
 						.onClick(async () => {
-							const search_term = this.app.workspace.getActiveFile()?.basename.toString();
-							// console.log(search_term)
-							if (!search_term) {
-								return
-							}
-							this.entitySearchCallback(search_term, false)
+							this.linkActiveNote(view as MarkdownView)
 						});
 
 				})
@@ -429,6 +616,20 @@ class EntityLinkerSettingsTab extends PluginSettingTab {
 				await this.plugin.saveSettings();
 			});
 
+		const conceptLoc = new Setting(containerEl)
+			.setName('Concept folder')
+			.setDesc('Folder to store OpenAlex concept hits. Leave empty to keep everything in the entity folder.');
+
+		new FileSuggestionComponent(conceptLoc.controlEl, this.app)
+			.setValue(this.plugin.settings.conceptFolder)
+			.setPlaceholder(DEFAULT_SETTINGS.conceptFolder)
+			.setFilter("folder")
+			.setLimit(10)
+			.onSelect(async (val: TAbstractFile) => {
+				this.plugin.settings.conceptFolder = val.path;
+				await this.plugin.saveSettings();
+			});
+
 		new Setting(containerEl)
 			.setName("Overwrite existing properties")
 			.setDesc("If checked, existing properties will be overwritten")
@@ -437,6 +638,28 @@ class EntityLinkerSettingsTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.overwriteFlag)
 					.onChange(async (value) => {
 						this.plugin.settings.overwriteFlag = value;
+						await this.plugin.saveSettings();
+					}));
+
+		new Setting(containerEl)
+			.setName("Insert link at selection")
+			.setDesc("Replace the selected text with a link to the entity note instead of opening it in a new tab")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.insertLinkOnSelection)
+					.onChange(async (value) => {
+						this.plugin.settings.insertLinkOnSelection = value;
+						await this.plugin.saveSettings();
+					}));
+
+		new Setting(containerEl)
+			.setName("Record aliases")
+			.setDesc("Add the searched term and canonical name to the note's aliases so both resolve to it")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.addAliases)
+					.onChange(async (value) => {
+						this.plugin.settings.addAliases = value;
 						await this.plugin.saveSettings();
 					}));
 	}
