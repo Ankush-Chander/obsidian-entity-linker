@@ -7,8 +7,29 @@ openalex)
 
 This plugin has two commands:
 
-1. `Link selection to entity`, which suggest entities using the selected text as search term.
-2. `Link active note to entity`, which suggest entities using the active note's title as search term.
+1. `Link selection to entity`, which suggests entities using the selected text as search term. On choosing a
+   suggestion it resolves the entity note (creating it if it does not exist yet) and replaces the selection with a
+   link to it. If the canonical name differs from the text you selected, the link is aliased
+   (`[[Post-training quantization|PTQ]]`) so your prose reads as written.
+2. `Link active note to entity`, which suggests entities using the active note's title as search term, and writes the
+   resolved properties into the frontmatter of **the note you are in**. It never creates a separate note.
+
+Before creating anything, the plugin looks for an existing note of that name anywhere in the vault, so a note you
+already filed by hand is reused rather than duplicated under a different folder or casing.
+
+### Settings
+
+| Setting | Effect |
+| --- | --- |
+| Polite email | Sent to the OpenAlex API for faster, more consistent responses. |
+| Entity folder | Where notes for named entities (the Wikipedia/Wikidata results) are created. |
+| Concept folder | Where notes for OpenAlex concept results are created. Leave empty to keep everything in the entity folder. |
+| Overwrite existing properties | If checked, existing properties are overwritten instead of preserved. |
+| Insert link at selection | Replace the selected text with a link to the note instead of opening it in a new tab. |
+| Record aliases | Add the searched term and canonical name to the note's `aliases` so both resolve to it. |
+
+Properties that resolve to nothing are skipped rather than written as blanks, so a note never accumulates empty
+`wikidata:` / `mag:` / `umls_cui:` keys.
 
 ### Demo
 #### Entity linking via selection as well as active note
@@ -16,7 +37,10 @@ This plugin has two commands:
 
 ### How it works
 
-Plugins uses [OpenAlex](https://docs.openalex.org/) api to search for terms and create entity note for the same.
+The plugin queries the [OpenAlex](https://docs.openalex.org/) concepts API for the search term. OpenAlex concepts are
+scholarly topics, so those hits are filed to the **concept folder**. When OpenAlex returns nothing, the plugin falls
+back to resolving the term against Wikipedia/Wikidata, and those hits — typically people, organisations and other
+named things — are filed to the **entity folder**.
 
 
 ### Installation
@@ -60,7 +84,7 @@ You can install this plugin within Obsidian by doing the following:
 
 - [x] First release
 - [ ] Add fuzzy logic
-- [ ] Add direct search
+- [x] Add direct search
 
 ### FAQs
 
